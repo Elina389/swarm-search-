@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment (regenerate with: python3 -m venv swarm-env)
+swarm-env/bin/
+swarm-env/lib/
+swarm-env/include/
+swarm-env/share/
+swarm-env/pyvenv.cfg
+
+# Downloaded/generated map data caches (regenerate on demand, not source)
+swarm-env/.osm_cache/
+swarm-env/cache/
+cache/
+
+# OS
+.DS_Store

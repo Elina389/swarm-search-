@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<!--
+  Minimal Google Maps smoke test -- confirms your API key + billing setup
+  actually works before wiring drones into it.
+
+  Setup:
+    1. Get a key from https://console.cloud.google.com/ (enable billing +
+       the "Maps JavaScript API").
+    2. Paste it into YOUR_API_KEY_HERE below.
+    3. Open this file directly in a browser (double-click it, or
+       `open map_test.html` on macOS).
+
+  If the key is missing/invalid, Google renders a grey box with a console
+  error instead of a map -- check the browser dev console (Cmd+Option+J) if
+  nothing shows up.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Swarm Search - Map Test</title>
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0; }
+    #map { height: 100%; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script>
+    function initMap() {
+      // Center + zoom for a small area -- swap these for wherever your
+      // swarm's bbox actually is. This one is a few blocks near UC Berkeley.
+      const center = { lat: 37.8725, lng: -122.256 };
+
+      const map = new google.maps.Map(document.getElementById("map"), {
+        zoom: 16,
+        center: center,
+        mapTypeId: "satellite",  // "roadmap" | "satellite" | "hybrid" | "terrain"
+      });
+
+      // A single marker just to confirm coordinates line up with what
+      // you'd expect -- this is where a drone would eventually render.
+      new google.maps.Marker({
+        position: center,
+        map: map,
+        title: "Test marker (future drone position)",
+      });
+    }
+    window.initMap = initMap;
+  </script>
+
+  <!-- Replace YOUR_API_KEY_HERE with your real key -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY_HERE&callback=initMap" async></script>
+</body>
+</html>

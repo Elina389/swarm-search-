@@ -1,0 +1,16 @@
+# Virtual environment internals -- regenerate with:
+#   python3 -m venv swarm-env
+#   ./swarm-env/bin/python3.14 -m pip install -r requirements.txt
+bin/
+lib/
+include/
+share/
+pyvenv.cfg
+
+# Generated map data caches -- regenerate on demand, not source
+.osm_cache/
+cache/
+
+# Python bytecode
+__pycache__/
+*.pyc
