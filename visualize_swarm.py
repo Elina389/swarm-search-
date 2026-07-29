@@ -10,6 +10,22 @@ When the env was built with a real bbox, the grid overlay can optionally be
 drawn on top of a real basemap image (via contextily, no API key needed) --
 see basemap.py and the `use_basemap` flag on demo_rollout().
 
+MOVEMENT STRATEGY: currently random. demo_rollout() below picks each
+drone's action with `env.action_space(agent).sample()` -- i.e. every step,
+every drone just rolls a die between up/down/left/right/stay. There is no
+coordination logic, no potential-field repulsion, no learned policy. This
+is intentional for now: it's a sanity check that the environment, rendering,
+and reward all work correctly before a real decision-maker is plugged in.
+The random rollout will "cover" a grid eventually, just inefficiently and
+with drones frequently colliding onto the same cells.
+
+To swap in real behavior, replace the `actions = {...}.sample()` line
+inside demo_rollout() with a call to whatever's actually deciding moves:
+  - Rule-based (potential fields / repulsion from teammates & obstacles,
+    attraction to nearest uncovered cell) -- doesn't need any RL.
+  - A trained policy network -- one forward pass per drone per step, using
+    the observation from env._get_obs(agent) as input.
+
 Run directly for a quick random-action demo:
     python visualize_swarm.py
 
@@ -25,6 +41,7 @@ from matplotlib.transforms import Affine2D
 
 # adjust this to match whatever your env file is actually named now
 from swarm import SwarmCoverageEnv
+from movement_policy import PotentialFieldPolicy, BFSCoveragePolicy
 
 
 # --- small vector "plane" icon, nose pointing up by default -----------------
@@ -98,6 +115,21 @@ def render_frame(env, basemap_img=None, headings=None):
         ax.plot(x, y, marker=_plane_marker(angle), markersize=16,
                  markerfacecolor="red", markeredgecolor="black", markeredgewidth=1)
 
+        # Small per-drone status label -- this is the kind of compact state
+        # a real drone would broadcast over radio (see swarm.py's module
+        # docstring: "what information actually gets shared"). Right now
+        # just battery %, but any per-agent stat added to env.battery (or a
+        # similar dict) can be shown here the same way.
+        battery = getattr(env, "battery", {}).get(agent)
+        if battery is not None:
+            color = "black" if battery > 30 else "red"
+            ax.annotate(
+                f"{battery:.0f}%",
+                xy=(x, y), xytext=(x + 0.4, y - 0.4),
+                fontsize=7, color=color, fontweight="bold",
+                ha="left",
+            )
+
     total_free = env.grid_size ** 2 - len(env.obstacles)
     coverage_pct = len(env.covered) / total_free
     ax.set_title(f"Step {env.steps} | Coverage: {coverage_pct:.0%}")
@@ -105,8 +137,8 @@ def render_frame(env, basemap_img=None, headings=None):
 
 
 def demo_rollout(n_drones=3, grid_size=10, n_obstacles=10, max_steps=50, seed=0, bbox=None,
-                  use_basemap=False, satellite=False):
-    """Runs one episode with random actions, just to sanity-check the visuals.
+                  use_basemap=False, satellite=False, strategy="bfs"):
+    """Runs one episode and visualizes it live.
 
     Pass bbox=(west, south, east, north) to search a real place instead of a
     random grid -- obstacles get pulled from OpenStreetMap. e.g. a few blocks
@@ -116,6 +148,22 @@ def demo_rollout(n_drones=3, grid_size=10, n_obstacles=10, max_steps=50, seed=0,
     key needed) to draw the grid on top of a real street/satellite image
     instead of a blank canvas. satellite=True switches the basemap tiles
     from street map to satellite imagery.
+
+    strategy : "random", "potential_field", or "bfs"
+        "random" -- each drone samples a uniformly random action every step,
+        ignoring its observation entirely. No obstacle awareness, no
+        coordination. Useful as a baseline to compare against.
+        "potential_field" -- hand-coded rule-based movement (see
+        movement_policy.py): repels from obstacles it can see, repels from
+        nearby teammates so the swarm spreads out, and steers toward visible
+        uncovered ground. Prone to occasional local-minimum oscillation
+        (a known limitation of potential fields in general).
+        "bfs" (default) -- real shortest-path search: each drone finds the
+        nearest reachable uncovered cell via breadth-first search and walks
+        directly toward it, with drones claiming disjoint target cells so
+        they naturally split up the territory. Roughly 2x the coverage of
+        potential_field in testing, and structurally can't oscillate the
+        way a force-based policy can.
     """
     env = SwarmCoverageEnv(
         grid_size=grid_size,
@@ -141,9 +189,26 @@ def demo_rollout(n_drones=3, grid_size=10, n_obstacles=10, max_steps=50, seed=0,
     headings = {agent: 0 for agent in env.agents}
     render_frame(env, basemap_img=basemap_img, headings=headings)
 
+    # Both stateful policies keep per-drone memory across steps (previous
+    # cell for potential fields, current target cell for BFS) -- they need
+    # to be created once outside the loop, not recreated every step.
+    pf_policy = PotentialFieldPolicy() if strategy == "potential_field" else None
+    bfs_policy = BFSCoveragePolicy() if strategy == "bfs" else None
+
     while env.agents:
         prev_positions = env.positions
-        actions = {agent: env.action_space(agent).sample() for agent in env.agents}
+
+        # --- movement strategy lives HERE -----------------------------
+        if strategy == "potential_field":
+            actions = pf_policy.actions(env)
+        elif strategy == "bfs":
+            actions = bfs_policy.actions(env)
+        elif strategy == "random":
+            actions = {agent: env.action_space(agent).sample() for agent in env.agents}
+        else:
+            raise ValueError(f"unknown strategy: {strategy!r}")
+        # ----------------------------------------------------------------
+
         observations, rewards, terminations, truncations, infos = env.step(actions)
 
         # point each plane icon toward wherever it actually just moved --
@@ -170,9 +235,12 @@ def demo_rollout(n_drones=3, grid_size=10, n_obstacles=10, max_steps=50, seed=0,
 SAN_JOSE_BBOX = (-121.94, 37.32, -121.87, 37.37)  # west, south, east, north
 
 
-def demo_san_jose(grid_size=25, n_drones=4, max_steps=120, seed=0, satellite=False):
+def demo_san_jose(grid_size=25, n_drones=4, max_steps=120, seed=0, satellite=False,
+                   strategy="bfs"):
     """Convenience wrapper: swarm search over real downtown San Jose, with
-    real building obstacles and a basemap underneath the plane icons."""
+    real building obstacles and a basemap underneath the plane icons.
+    Defaults to the BFS strategy for the best coverage (see demo_rollout's
+    docstring for a comparison of strategies)."""
     demo_rollout(
         grid_size=grid_size,
         n_drones=n_drones,
@@ -181,6 +249,7 @@ def demo_san_jose(grid_size=25, n_drones=4, max_steps=120, seed=0, satellite=Fal
         bbox=SAN_JOSE_BBOX,
         use_basemap=True,
         satellite=satellite,
+        strategy=strategy,
     )
 
 
