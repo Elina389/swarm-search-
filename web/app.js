@@ -68,10 +68,37 @@ function renderDroneSidebar(drones) {
   }
 }
 
+function populateControls(msg) {
+  const select = document.getElementById("location-select");
+  // Only rebuild the option list the first time -- the set of available
+  // locations never changes mid-session, only which one is selected does.
+  if (select.options.length === 0) {
+    for (const [key, label] of Object.entries(msg.locations)) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = label;
+      select.appendChild(opt);
+    }
+  }
+  select.value = msg.location_key;
+
+  const slider = document.getElementById("drone-slider");
+  slider.min = msg.min_drones;
+  slider.max = msg.max_drones;
+  slider.value = msg.n_drones;
+  document.getElementById("drone-count-label").textContent = msg.n_drones;
+
+  document.getElementById("subtitle").textContent =
+    `Live coverage over ${msg.locations[msg.location_key]}`;
+}
+
 function handleInit(msg) {
   map.setView([msg.center.lat, msg.center.lon], 15);
+  populateControls(msg);
 
   obstacleLayer.clearLayers();
+  droneLayer.clearLayers();
+  for (const key of Object.keys(droneMarkers)) delete droneMarkers[key];
   for (const bounds of msg.obstacles) {
     L.rectangle(boundsToLatLngBounds(bounds), {
       color: "#000",
@@ -79,6 +106,32 @@ function handleInit(msg) {
       fillColor: "#1a1a1a",
       fillOpacity: 0.55,
     }).addTo(obstacleLayer);
+  }
+}
+
+async function deploySwarm() {
+  const location = document.getElementById("location-select").value;
+  const n_drones = parseInt(document.getElementById("drone-slider").value, 10);
+  const btn = document.getElementById("deploy-btn");
+
+  btn.disabled = true;
+  btn.textContent = "Deploying...";
+  try {
+    const resp = await fetch("/api/configure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ location, n_drones }),
+    });
+    if (!resp.ok) throw new Error(`server returned ${resp.status}`);
+    // The server broadcasts a fresh "init" + "reset" over the WebSocket
+    // once the new environment is built, which handleInit()/handleReset()
+    // pick up automatically -- no need to do anything else here.
+  } catch (err) {
+    console.error("Failed to configure simulation:", err);
+    alert("Couldn't switch search site -- check that the server is running.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Deploy swarm";
   }
 }
 
@@ -133,5 +186,13 @@ function connect() {
     else if (msg.type === "reset") handleReset();
   };
 }
+
+// Live-update the "Drones: N" label as the slider moves (doesn't deploy
+// until the button is pressed -- moving the slider alone changes nothing
+// on the server).
+document.getElementById("drone-slider").addEventListener("input", (e) => {
+  document.getElementById("drone-count-label").textContent = e.target.value;
+});
+document.getElementById("deploy-btn").addEventListener("click", deploySwarm);
 
 connect();

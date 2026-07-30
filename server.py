@@ -27,18 +27,41 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "swarm-env"))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from swarm import SwarmCoverageEnv
 from movement_policy import BFSCoveragePolicy
 
-# Same downtown San Jose slice used in visualize_swarm.py's demo_san_jose().
-SAN_JOSE_BBOX = (-121.94, 37.32, -121.87, 37.37)  # west, south, east, north
+# Selectable search sites -- real named places used as stand-ins for a
+# "disaster zone," not a live incident feed (this project has no source of
+# real-time disaster data). Picking one and a drone count models sending a
+# swarm to search a specific real area, similar to choosing a sector on a
+# radar screen. bbox = (west, south, east, north) in lon/lat degrees.
+LOCATIONS = {
+    "san_jose": {
+        "label": "Downtown San Jose, CA",
+        "bbox": (-121.94, 37.32, -121.87, 37.37),
+        "grid_size": 25,
+    },
+    "berkeley": {
+        "label": "UC Berkeley campus area",
+        "bbox": (-122.259, 37.870, -122.253, 37.875),
+        "grid_size": 20,
+    },
+    "golden_gate_park": {
+        "label": "Golden Gate Park, SF",
+        "bbox": (-122.511, 37.765, -122.454, 37.775),
+        "grid_size": 25,
+    },
+}
+DEFAULT_LOCATION = "san_jose"
+MIN_DRONES = 1
+MAX_DRONES = 10
+DEFAULT_N_DRONES = 4
 
-GRID_SIZE = 25
-N_DRONES = 4
 MAX_STEPS = 150
 TICK_SECONDS = 0.25  # simulated time between broadcasts -- lower = faster playback
 
@@ -89,21 +112,48 @@ manager = ConnectionManager()
 class SimulationRunner:
     """Owns one long-running SwarmCoverageEnv episode loop. When an episode
     truncates, it resets and keeps going -- this is meant to run forever as
-    a live demo, not a single one-shot script."""
+    a live demo, not a single one-shot script.
 
-    def __init__(self):
-        self.env = SwarmCoverageEnv(
-            grid_size=GRID_SIZE, n_drones=N_DRONES, max_steps=MAX_STEPS,
-            bbox=SAN_JOSE_BBOX,
-        )
+    Also supports switching location or drone count live: rebuild_env()
+    tears down the current env and builds a fresh one, which necessarily
+    means a full episode reset (obstacles, coverage, and battery for the
+    new area/swarm size don't carry over from the old one -- there's no
+    sensible way to "resume" a search of one place with a swarm sized for
+    a different one).
+    """
+
+    def __init__(self, location_key=DEFAULT_LOCATION, n_drones=DEFAULT_N_DRONES):
+        self.location_key = None
+        self.n_drones = None
+        self.env = None
         self.policy = None
         self.headings = {}
+        # guards the sim loop from reading self.env mid-rebuild
+        self.lock = asyncio.Lock()
+        self.rebuild_env(location_key, n_drones)
+
+    def rebuild_env(self, location_key, n_drones):
+        if location_key not in LOCATIONS:
+            raise ValueError(f"unknown location: {location_key!r}")
+        n_drones = max(MIN_DRONES, min(MAX_DRONES, int(n_drones)))
+
+        loc = LOCATIONS[location_key]
+        self.location_key = location_key
+        self.n_drones = n_drones
+        self.env = SwarmCoverageEnv(
+            grid_size=loc["grid_size"], n_drones=n_drones, max_steps=MAX_STEPS,
+            bbox=loc["bbox"],
+        )
         self._reset_episode()
 
     def _reset_episode(self):
         self.env.reset()
         self.policy = BFSCoveragePolicy()
         self.headings = {agent: 0 for agent in self.env.agents}
+
+    def location_center(self):
+        west, south, east, north = LOCATIONS[self.location_key]["bbox"]
+        return {"lat": (south + north) / 2, "lon": (west + east) / 2}
 
     def obstacles_payload(self):
         """[west, south, east, north] bounds for every obstacle cell --
@@ -160,21 +210,29 @@ class SimulationRunner:
 runner = SimulationRunner()
 
 
+def init_payload():
+    return {
+        "type": "init",
+        "location_key": runner.location_key,
+        "locations": {k: v["label"] for k, v in LOCATIONS.items()},
+        "n_drones": runner.n_drones,
+        "min_drones": MIN_DRONES,
+        "max_drones": MAX_DRONES,
+        "grid_size": runner.env.grid_size,
+        "obstacles": runner.obstacles_payload(),
+        "center": runner.location_center(),
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
-    # New client gets the current obstacle layout immediately -- obstacles
-    # are fixed for this bbox, so this only needs to happen once per client,
-    # not every tick.
-    await ws.send_json({
-        "type": "init",
-        "grid_size": runner.env.grid_size,
-        "obstacles": runner.obstacles_payload(),
-        "center": {
-            "lat": (SAN_JOSE_BBOX[1] + SAN_JOSE_BBOX[3]) / 2,
-            "lon": (SAN_JOSE_BBOX[0] + SAN_JOSE_BBOX[2]) / 2,
-        },
-    })
+    # New client gets the current location/obstacle layout immediately --
+    # obstacles are fixed per bbox, so this only needs to happen once per
+    # client (or again after a rebuild, see /api/configure below), not
+    # every tick.
+    async with runner.lock:
+        await ws.send_json(init_payload())
     try:
         while True:
             # Keep the connection open; the actual simulation loop
@@ -185,12 +243,36 @@ async def websocket_endpoint(ws: WebSocket):
         manager.disconnect(ws)
 
 
+class ConfigureRequest(BaseModel):
+    location: str
+    n_drones: int
+
+
+@app.post("/api/configure")
+async def configure(req: ConfigureRequest):
+    """Switch the live simulation to a different search site and/or drone
+    count -- this is the 'radar: pick a zone and send N drones' control.
+    Rebuilds the environment (a fresh episode; see rebuild_env's docstring
+    for why state can't carry over) and re-broadcasts a fresh init payload
+    to every connected browser so their obstacle overlay/sidebar update to
+    match the new area immediately, instead of waiting for the next tick.
+    """
+    if req.location not in LOCATIONS:
+        raise HTTPException(status_code=400, detail=f"unknown location: {req.location!r}")
+    async with runner.lock:
+        runner.rebuild_env(req.location, req.n_drones)
+        await manager.broadcast(init_payload())
+        await manager.broadcast({"type": "reset"})
+    return {"ok": True, "location": runner.location_key, "n_drones": runner.n_drones}
+
+
 async def simulation_loop():
     """Runs forever in the background: step the sim, broadcast the result,
     wait, repeat. Starts as soon as the server starts, independent of
     whether any browser is currently connected."""
     while True:
-        message, just_reset = runner.step()
+        async with runner.lock:
+            message, just_reset = runner.step()
         if just_reset:
             await manager.broadcast({"type": "reset"})
         await manager.broadcast(message)
