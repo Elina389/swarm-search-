@@ -350,6 +350,9 @@ class BFSCoveragePolicy:
         """
         self.sticky = sticky
         self._target = {}  # agent -> (row, col) it's currently heading toward
+        # agent -> short human-readable reason for its current action, for
+        # the UI's hover tooltips. Purely explanatory; doesn't affect logic.
+        self.last_reason = {}
 
     def actions(self, env):
         claimed = set()
@@ -383,8 +386,16 @@ class BFSCoveragePolicy:
             self._target[agent] = target
 
             if target is None or target == pos:
+                self.last_reason[agent] = (
+                    "Idle -- all reachable cells already covered"
+                )
                 actions[agent] = STAY_ACTION
                 continue
+
+            self.last_reason[agent] = (
+                f"Heading to nearest uncovered cell, {dist[target]} steps away "
+                f"(BFS shortest path)"
+            )
 
             claimed.add(target)
             next_cell = _first_step_toward(pos, target, parent)

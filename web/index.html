@@ -70,6 +70,46 @@
     #status-line { font-size: 11px; color: #888; margin-top: 16px; }
 
     .leaflet-popup-content { font-size: 12px; }
+
+    /* Damage assessment panel (unknown_terrain mode only) */
+    #damage-panel { margin-top: 4px; margin-bottom: 12px; }
+    #damage-panel.hidden { display: none; }
+    #damage-panel .section-title {
+      font-size: 12px; font-weight: 600; margin: 8px 0 6px; color: #e6e6e6;
+    }
+    .sev-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+    .sev-swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+    .sev-count { margin-left: auto; font-weight: 600; }
+    .zone-row {
+      font-size: 11px; color: #ddd; background: #1d2026; border-radius: 6px;
+      padding: 6px 8px; margin-bottom: 4px; cursor: pointer;
+      border-left: 3px solid #e74c3c;
+    }
+    .zone-row:hover { background: #242832; }
+    .damage-popup b { display: block; margin-bottom: 3px; }
+
+    /* priority toggle */
+    .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #cfd3da; }
+    .checkbox-row.hidden { display: none; }
+    .checkbox-row input { width: auto; }
+
+    /* right-side explanation panel */
+    #explain-panel {
+      background: #1a1d23; border-radius: 8px; padding: 12px;
+      margin: 8px 0 12px; font-size: 11.5px; line-height: 1.5; color: #c7ccd4;
+    }
+    #explain-panel h3 { font-size: 12px; margin: 0 0 6px; color: #fff; }
+    #explain-panel .fn {
+      font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+      background: #0f1115; border-radius: 4px; padding: 2px 5px; color: #9ecbff;
+    }
+    #explain-panel .legend-row { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+    #explain-panel .legend-swatch {
+      width: 14px; height: 10px; border-radius: 2px; flex: none; border: 1px solid #000;
+    }
+    #explain-panel .muted { color: #8a90a0; }
+    .drone-tooltip { font-size: 11px; }
+    .drone-tooltip b { display: block; }
   </style>
 </head>
 <body>
@@ -80,20 +120,39 @@
       <div class="subtitle" id="subtitle">Live coverage over a real search site</div>
 
       <div class="control-block">
+        <label for="mode-select">Mode</label>
+        <select id="mode-select"></select>
+
         <label for="location-select">Search site</label>
         <select id="location-select"></select>
 
         <label for="drone-slider">Drones: <span id="drone-count-label"></span></label>
         <input type="range" id="drone-slider" min="1" max="10" value="4" />
 
+        <div class="checkbox-row hidden" id="priority-row">
+          <input type="checkbox" id="priority-toggle" checked />
+          <label for="priority-toggle" style="margin:0">Prioritize damage (route toward severity)</label>
+        </div>
+
         <button id="deploy-btn">Deploy swarm</button>
       </div>
 
       <div class="stat-row"><span>Step</span><span id="stat-step">0 / 0</span></div>
-      <div class="stat-row"><span>Coverage</span><span id="stat-coverage">0%</span></div>
+      <div class="stat-row"><span id="progress-label">Coverage</span><span id="stat-coverage">0%</span></div>
       <div id="coverage-bar-track"><div id="coverage-bar-fill"></div></div>
 
+      <div id="damage-panel" class="hidden">
+        <div class="section-title">Damage assessment</div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#f1c40f"></span>Minor<span class="sev-count" id="cnt-minor">0</span></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#e67e22"></span>Major<span class="sev-count" id="cnt-major">0</span></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#c0392b"></span>Destroyed<span class="sev-count" id="cnt-destroyed">0</span></div>
+        <div class="section-title">Priority zones</div>
+        <div id="zone-list"></div>
+      </div>
+
       <div id="drone-list"></div>
+
+      <div id="explain-panel"></div>
 
       <div id="status-line"><span id="status-dot"></span><span id="status-text">connecting...</span></div>
     </div>
